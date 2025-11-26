@@ -1,137 +1,74 @@
 import express from 'express';
-import { Command } from 'commander';
-import multer from 'multer';
-import path from 'path';
 import fs from 'fs';
+import path from 'path';
+import multer from 'multer';
+import swaggerUi from 'swagger-ui-express'; 
 import { fileURLToPath } from 'url';
-import swaggerUi from 'swagger-ui-express';
-import swaggerJsdoc from 'swagger-jsdoc';
 
-// --- 1. НАЛАШТУВАННЯ СЕРЕДОВИЩА ---
-
-// Використовуємо main.js замість server.js
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const program = new Command();
+let swaggerDocument = {};
+try {
+    const swaggerPath = path.join(__dirname, 'swagger.json');
+    const swaggerContent = fs.readFileSync(swaggerPath, 'utf8');
+    swaggerDocument = JSON.parse(swaggerContent);
+} catch (error) {
+    console.error(`Помилка завантаження swagger.json: ${error.message}`);
+}
 
-program
-  .name("WebBack-5")
-  .version("1.0.0")
-  .requiredOption('-h, --host <string>', 'адреса сервера')
-  .requiredOption('-p, --port <number>', 'порт сервера')
-  .requiredOption('-c, --cache <path>', 'шлях до директорії кешу (uploads)');
+const host = 'localhost'; 
+const port = 3000; 
+const CACHE_DIR_NAME = 'lab6/uploads';
 
-program.parse(process.argv);
-const options = program.opts();
+const UPLOAD_PATH_ABSOLUTE = path.join(__dirname, CACHE_DIR_NAME); 
 
-const HOST = options.host;
-const PORT = parseInt(options.port, 10);
-const CACHE_DIR = options.cache;
-
-const uploadPath = path.resolve(process.cwd(), CACHE_DIR);
-if (!fs.existsSync(uploadPath)) {
-    fs.mkdirSync(uploadPath, { recursive: true });
+if (!fs.existsSync(UPLOAD_PATH_ABSOLUTE)) {
+    fs.mkdirSync(UPLOAD_PATH_ABSOLUTE, { recursive: true });
+    console.log(`Сервер: Директорія завантажень створена: ${UPLOAD_PATH_ABSOLUTE}`);
 }
 
 const app = express();
+let inventoryDB = []; 
 
-// --- 2. SWAGGER CONFIGURATION ---
-const swaggerOptions = {
-    definition: {
-        openapi: '3.0.0',
-        info: {
-            title: 'Inventory API',
-            version: '1.0.0',
-            description: 'API для управління інвентаризацією речей',
-        },
-        servers: [
-            {
-                url: `http://${HOST}:${PORT}`,
-                description: 'Main Server'
+const deleteFileIfExist = (filename) => {
+    if (filename) {
+        const filePath = path.join(UPLOAD_PATH_ABSOLUTE, filename);
+        try {
+            if (fs.existsSync(filePath)) {
+                fs.unlinkSync(filePath);
             }
-        ],
-    },
-    apis: ['./main.js'], // Вказуємо main.js
+        } catch (error) {
+            console.error(`Помилка видалення файлу ${filename}: ${error.message}`);
+        }
+    }
 };
 
-const swaggerDocs = swaggerJsdoc(swaggerOptions);
-app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerDocs));
-
-
-// --- 3. MULTER & MIDDLEWARE ---
-
 const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        cb(null, uploadPath);
-    },
+    destination: (req, file, cb) => { cb(null, UPLOAD_PATH_ABSOLUTE); },
     filename: (req, file, cb) => {
         const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
         cb(null, uniqueSuffix + path.extname(file.originalname));
     }
 });
-
 const upload = multer({ storage: storage });
 
-app.use(express.json());
+app.use(express.json()); 
 app.use(express.urlencoded({ extended: true }));
-app.use(express.static(path.join(__dirname, 'lab6'))); 
+app.use(express.static(path.join(__dirname, 'lab6')));
+if (Object.keys(swaggerDocument).length > 0) {
+    app.use('/docs', swaggerUi.serve, swaggerUi.setup(swaggerDocument));
+}
 
-let inventoryDB = [];
-
-// --- 4. РОУТИ З ВИПРАВЛЕНОЮ ДОКУМЕНТАЦІЄЮ ---
-
-/**
- * @swagger
- * /inventory:
- * get:
- * summary: Отримати список всіх речей
- * responses:
- * 200:
- * description: Успішна відповідь зі списком
- * content:
- * application/json:
- * schema:
- * type: array
- * items:
- * type: object
- */
 app.get('/inventory', (req, res) => {
-    res.json(inventoryDB);
+    res.json({ count: inventoryDB.length, items: inventoryDB });
 });
 
-/**
- * @swagger
- * /register:
- * post:
- * summary: Зареєструвати нову річ
- * requestBody:
- * required: true
- * content:
- * multipart/form-data:
- * schema:
- * type: object
- * properties:
- * inventory_name:
- * type: string
- * description: Обов'язкова назва речі.
- * description:
- * type: string
- * description: Детальний опис.
- * photo:
- * type: string
- * format: binary
- * description: Файл зображення.
- * responses:
- * 201:
- * description: Створено успішно.
- * 400:
- * description: Не вказано ім'я.
- */
 app.post('/register', upload.single('photo'), (req, res) => {
     const { inventory_name, description } = req.body;
 
     if (!inventory_name) {
+        if (req.file) { deleteFileIfExist(req.file.filename); }
         return res.status(400).json({ message: 'Bad Request: inventory_name is required' });
     }
 
@@ -146,64 +83,17 @@ app.post('/register', upload.single('photo'), (req, res) => {
     res.status(201).json({ message: 'Item registered', item: newItem });
 });
 
-/**
- * @swagger
- * /inventory/{id}:
- * get:
- * summary: Отримати інформацію про річ за ID
- * parameters:
- * - in: path
- * name: id
- * required: true
- * schema:
- * type: string
- * description: Унікальний ID речі.
- * responses:
- * 200:
- * description: Інформація про річ
- * 404:
- * description: Річ не знайдено
- */
 app.get('/inventory/:id', (req, res) => {
     const item = inventoryDB.find(i => i.id === req.params.id);
     if (!item) return res.status(404).json({ message: 'Not Found' });
     
     const responseItem = { ...item };
     if (item.photo) {
-        responseItem.photoUrl = `http://${HOST}:${PORT}/inventory/${item.id}/photo`;
+        responseItem.photoUrl = `http://${host}:${port}/inventory/${item.id}/photo`;
     }
     res.json(responseItem);
 });
 
-/**
- * @swagger
- * /inventory/{id}:
- * put:
- * summary: Оновити дані речі
- * parameters:
- * - in: path
- * name: id
- * required: true
- * schema:
- * type: string
- * description: ID речі.
- * requestBody:
- * required: true
- * content:
- * application/json:
- * schema:
- * type: object
- * properties:
- * inventory_name:
- * type: string
- * description:
- * type: string
- * responses:
- * 200:
- * description: Оновлено успішно
- * 404:
- * description: Річ не знайдено
- */
 app.put('/inventory/:id', (req, res) => {
     const item = inventoryDB.find(i => i.id === req.params.id);
     if (!item) return res.status(404).json({ message: 'Not Found' });
@@ -211,60 +101,22 @@ app.put('/inventory/:id', (req, res) => {
     const { inventory_name, description } = req.body;
     
     if (inventory_name) item.inventory_name = inventory_name;
-    if (description !== undefined) item.description = description;
+    if (description !== undefined) item.description = description; 
 
-    res.json(item);
+    res.json({ message: 'Item updated', item });
 });
 
-/**
- * @swagger
- * /inventory/{id}:
- * delete:
- * summary: Видалити річ
- * parameters:
- * - in: path
- * name: id
- * required: true
- * schema:
- * type: string
- * description: ID речі.
- * responses:
- * 200:
- * description: Видалено успішно
- * 404:
- * description: Річ не знайдено
- */
 app.delete('/inventory/:id', (req, res) => {
     const index = inventoryDB.findIndex(i => i.id === req.params.id);
     if (index === -1) return res.status(404).json({ message: 'Not Found' });
+    
+    const deletedItem = inventoryDB[index];
+    deleteFileIfExist(deletedItem.photo);
 
     inventoryDB.splice(index, 1);
     res.status(200).json({ message: 'Item deleted' });
 });
 
-/**
- * @swagger
- * /inventory/{id}/photo:
- * get:
- * summary: Отримати фото речі
- * parameters:
- * - in: path
- * name: id
- * required: true
- * schema:
- * type: string
- * description: ID речі.
- * responses:
- * 200:
- * description: Зображення
- * content:
- * image/jpeg:
- * schema:
- * type: string
- * format: binary
- * 404:
- * description: Фото або річ не знайдено
- */
 app.get('/inventory/:id/photo', (req, res) => {
     const item = inventoryDB.find(i => i.id === req.params.id);
     
@@ -272,7 +124,7 @@ app.get('/inventory/:id/photo', (req, res) => {
         return res.status(404).json({ message: 'Not found or no photo' });
     }
 
-    const filePath = path.join(uploadPath, item.photo);
+    const filePath = path.join(UPLOAD_PATH_ABSOLUTE, item.photo);
     
     if (fs.existsSync(filePath)) {
         res.sendFile(filePath);
@@ -281,66 +133,23 @@ app.get('/inventory/:id/photo', (req, res) => {
     }
 });
 
-/**
- * @swagger
- * /inventory/{id}/photo:
- * put:
- * summary: Оновити фото речі
- * parameters:
- * - in: path
- * name: id
- * required: true
- * schema:
- * type: string
- * description: ID речі.
- * requestBody:
- * required: true
- * content:
- * multipart/form-data:
- * schema:
- * type: object
- * properties:
- * photo:
- * type: string
- * format: binary
- * responses:
- * 200:
- * description: Фото оновлено
- */
 app.put('/inventory/:id/photo', upload.single('photo'), (req, res) => {
     const item = inventoryDB.find(i => i.id === req.params.id);
-    if (!item) return res.status(404).json({ message: 'Not Found' });
+    if (!item) {
+        if (req.file) { deleteFileIfExist(req.file.filename); }
+        return res.status(404).json({ message: 'Not Found' });
+    }
 
     if (!req.file) {
         return res.status(400).json({ message: 'No file uploaded' });
     }
+    
+    deleteFileIfExist(item.photo);
 
     item.photo = req.file.filename;
     res.json({ message: 'Photo updated', item });
 });
 
-/**
- * @swagger
- * /search:
- * post:
- * summary: Пошук речі за ID (Form URL Encoded)
- * requestBody:
- * required: true
- * content:
- * application/x-www-form-urlencoded:
- * schema:
- * type: object
- * properties:
- * id:
- * type: string
- * has_photo:
- * type: string
- * responses:
- * 200:
- * description: Знайдена річ
- * 404:
- * description: Не знайдено
- */
 app.post('/search', (req, res) => {
     const { id, has_photo } = req.body;
     const item = inventoryDB.find(i => i.id === id);
@@ -352,7 +161,7 @@ app.post('/search', (req, res) => {
     const responseItem = { ...item };
     if (has_photo === 'on' || has_photo === 'true') {
         if (item.photo) {
-             responseItem.photoLink = `http://${HOST}:${PORT}/inventory/${item.id}/photo`;
+             responseItem.photoLink = `http://${host}:${port}/inventory/${item.id}/photo`;
         } else {
              responseItem.photoLink = "No photo available";
         }
@@ -362,11 +171,10 @@ app.post('/search', (req, res) => {
 });
 
 
-// --- 405/404 Handlers ---
-
 app.use((req, res, next) => {
     const knownPaths = ['/inventory', '/register', '/search'];
     const pathBase = req.path.split('/')[1];
+    
     if (knownPaths.includes('/' + pathBase) && req.method !== 'GET' && req.method !== 'POST' && req.method !== 'PUT' && req.method !== 'DELETE') {
          return res.status(405).send('Method Not Allowed');
     }
@@ -377,9 +185,13 @@ app.use((req, res) => {
     res.status(404).send('Not Found');
 });
 
-// --- 5. ЗАПУСК ---
-app.listen(PORT, HOST, () => {
-    console.log(`Server running at http://${HOST}:${PORT}`);
-    console.log(`Docs available at http://${HOST}:${PORT}/docs`); 
-    console.log(`Cache dir: ${uploadPath}`);
+app.listen(port, host, () => {
+    console.log(`\n--- Inventory API Service ---`);
+    console.log(`Сервіс запущено: http://${host}:${port}`);
+    if (Object.keys(swaggerDocument).length > 0) {
+        console.log(`Документація Swagger: http://${host}:${port}/docs`); 
+    } else {
+        console.log('Попередження: Документація Swagger не завантажена. Перевірте swagger.json.');
+    }
+    console.log(`--- Ready to serve ---`);
 });
