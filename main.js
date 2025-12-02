@@ -61,7 +61,15 @@ if (Object.keys(swaggerDocument).length > 0) {
 }
 
 app.get('/inventory', (req, res) => {
-    res.json({ count: inventoryDB.length, items: inventoryDB });
+    
+    const itemsWithUrls = inventoryDB.map(item => ({
+        ...item,
+        photoUrl: item.photo 
+            ? `http://${host}:${port}/inventory/${item.id}/photo` 
+            : null
+    }));
+    
+    res.json({ count: itemsWithUrls.length, items: itemsWithUrls });
 });
 
 app.post('/register', upload.single('photo'), (req, res) => {
